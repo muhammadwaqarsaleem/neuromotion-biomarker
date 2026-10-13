@@ -1,0 +1,12 @@
+# Core Computer Vision & Landmark Estimation
+opencv-python==4.9.0.80
+mediapipe==0.10.14
+
+# Scientific Computing & Signal Processing
+numpy==1.26.4
+scipy==1.11.4
+pandas==2.2.1
+
+# Visualization & Interactive Dashboard
+plotly==5.20.0
+streamlit==1.32.2
