@@ -19,12 +19,14 @@ import numpy as np
 WRIST_IDX: int = 0
 THUMB_TIP_IDX: int = 4
 INDEX_TIP_IDX: int = 8
+MIDDLE_MCP_IDX: int = 9
 MIDDLE_TIP_IDX: int = 12
 
 KEY_LANDMARK_INDICES: Tuple[int, ...] = (
     WRIST_IDX,
     THUMB_TIP_IDX,
     INDEX_TIP_IDX,
+    MIDDLE_MCP_IDX,
     MIDDLE_TIP_IDX,
 )
 
@@ -187,6 +189,7 @@ class HandTracker:
             WRIST_IDX: "wrist",
             THUMB_TIP_IDX: "thumb_tip",
             INDEX_TIP_IDX: "index_tip",
+            MIDDLE_MCP_IDX: "middle_mcp",
             MIDDLE_TIP_IDX: "middle_tip",
         }
 
@@ -204,14 +207,70 @@ class HandTracker:
             landmarks_norm[alias] = norm_coord
             landmarks_pixel[alias] = px_coord
 
+        # Compute scale-normalization reference length L_ref:
+        # Euclidean distance between Landmark 0 (Wrist) and Landmark 9 (Middle Finger MCP)
+        wrist_norm = np.array(landmarks_norm[WRIST_IDX], dtype=np.float64)
+        middle_mcp_norm = np.array(landmarks_norm[MIDDLE_MCP_IDX], dtype=np.float64)
+        thumb_norm = np.array(landmarks_norm[THUMB_TIP_IDX], dtype=np.float64)
+        index_norm = np.array(landmarks_norm[INDEX_TIP_IDX], dtype=np.float64)
+
+        l_ref = float(np.linalg.norm(wrist_norm - middle_mcp_norm))
+        if l_ref < 1e-4:
+            l_ref = 1.0
+
+        # Compute raw Euclidean distance & scale-invariant normalized aperture A(t) = ||thumb - index|| / L_ref
+        raw_dist = float(np.linalg.norm(thumb_norm - index_norm))
+        normalized_aperture = float(raw_dist / l_ref)
+
         landmark_data: Dict[str, Any] = {
             "landmarks_norm": landmarks_norm,
             "landmarks_pixel": landmarks_pixel,
             "handedness": handedness_info,
             "timestamp": timestamp,
+            "l_ref": l_ref,
+            "raw_distance": raw_dist,
+            "normalized_aperture": normalized_aperture,
+            "aperture": normalized_aperture,
         }
 
         return annotated_frame, landmark_data
+
+    @staticmethod
+    def create_capture(
+        camera_id: int = 0,
+        width: int = 640,
+        height: int = 480,
+    ) -> cv2.VideoCapture:
+        """
+        Initialize OpenCV VideoCapture device with DirectShow (on Windows),
+        MJPG FourCC codec for optimal framerate/bandwidth, and explicitly
+        enforced 640x480 resolution.
+
+        Args:
+            camera_id: Video device index (default: 0).
+            width: Desired frame width in pixels (enforced to 640).
+            height: Desired frame height in pixels (enforced to 480).
+
+        Returns:
+            Configured cv2.VideoCapture object.
+        """
+        import sys
+
+        if sys.platform.startswith("win"):
+            cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap.release()
+                cap = cv2.VideoCapture(camera_id)
+        else:
+            cap = cv2.VideoCapture(camera_id)
+
+        if cap.isOpened():
+            # Optimize capture framerate on Windows DirectShow via MJPG FourCC codec
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+        return cap
 
     def close(self) -> None:
         """Release underlying MediaPipe resource handles."""
@@ -258,6 +317,7 @@ class KinematicBuffer:
         thumb_tip: Union[Tuple[float, ...], np.ndarray],
         index_tip: Union[Tuple[float, ...], np.ndarray],
         wrist: Union[Tuple[float, ...], np.ndarray],
+        middle_mcp: Optional[Union[Tuple[float, ...], np.ndarray]] = None,
     ) -> None:
         """
         Store a timestamp and 3D coordinate tuples into the FIFO buffer.
@@ -269,12 +329,19 @@ class KinematicBuffer:
             thumb_tip: (x, y, z) 3D coordinate of the thumb tip.
             index_tip: (x, y, z) 3D coordinate of the index fingertip.
             wrist: (x, y, z) 3D coordinate of the wrist.
+            middle_mcp: Optional (x, y, z) 3D coordinate of the middle finger MCP joint
+                        used for scale normalization.
         """
         thumb_tuple = (float(thumb_tip[0]), float(thumb_tip[1]), float(thumb_tip[2]))
         index_tuple = (float(index_tip[0]), float(index_tip[1]), float(index_tip[2]))
         wrist_tuple = (float(wrist[0]), float(wrist[1]), float(wrist[2]))
+        mcp_tuple = (
+            (float(middle_mcp[0]), float(middle_mcp[1]), float(middle_mcp[2]))
+            if middle_mcp is not None
+            else None
+        )
 
-        entry = (float(timestamp), thumb_tuple, index_tuple, wrist_tuple)
+        entry = (float(timestamp), thumb_tuple, index_tuple, wrist_tuple, mcp_tuple)
 
         with self._lock:
             self._queue.append(entry)
@@ -285,44 +352,86 @@ class KinematicBuffer:
 
         Returns:
             Dictionary containing synchronized NumPy arrays:
-                - 'time': 1D array of relative elapsed timestamps in seconds (starting at t = 0.0), shape (N,).
+                - 'time': 1D array of strictly monotonically increasing relative timestamps
+                  in seconds (starting at t = 0.0), shape (N,).
+                - 'timestamps': Alias for 'time'.
                 - 'thumb_tip': 2D array of (x, y, z) coordinates, shape (N, 3).
                 - 'index_tip': 2D array of (x, y, z) coordinates, shape (N, 3).
                 - 'wrist': 2D array of (x, y, z) coordinates, shape (N, 3).
-                - 'euclidean_distance': 1D array of Euclidean distances between thumb tip
+                - 'middle_mcp': 2D array of (x, y, z) coordinates, shape (N, 3).
+                - 'euclidean_distance': 1D array of 3D Euclidean distances between thumb tip
                   and index tip across all frames, shape (N,).
+                - 'raw_distance': Alias for 'euclidean_distance'.
+                - 'l_ref': 1D array of scale-normalization reference lengths (Wrist to Middle MCP).
+                - 'normalized_aperture': 1D array of scale-invariant finger apertures A(t).
+                - 'aperture': Alias for 'normalized_aperture'.
+                - 'distance': Scale-invariant normalized aperture for downstream biomarker analysis.
         """
         with self._lock:
             if not self._queue:
                 return {
                     "time": np.empty((0,), dtype=np.float64),
+                    "timestamps": np.empty((0,), dtype=np.float64),
                     "thumb_tip": np.empty((0, 3), dtype=np.float64),
                     "index_tip": np.empty((0, 3), dtype=np.float64),
                     "wrist": np.empty((0, 3), dtype=np.float64),
+                    "middle_mcp": np.empty((0, 3), dtype=np.float64),
                     "euclidean_distance": np.empty((0,), dtype=np.float64),
+                    "raw_distance": np.empty((0,), dtype=np.float64),
+                    "l_ref": np.empty((0,), dtype=np.float64),
+                    "normalized_aperture": np.empty((0,), dtype=np.float64),
+                    "aperture": np.empty((0,), dtype=np.float64),
+                    "distance": np.empty((0,), dtype=np.float64),
                 }
 
             timestamps = [entry[0] for entry in self._queue]
             thumb = [entry[1] for entry in self._queue]
             index = [entry[2] for entry in self._queue]
             wrist = [entry[3] for entry in self._queue]
+            mcp = [entry[4] for entry in self._queue]
 
         t_arr = np.array(timestamps, dtype=np.float64)
         time_rel = t_arr - t_arr[0]
+
+        # Enforce strictly monotonically increasing relative seconds (t - t0)
+        for i in range(1, len(time_rel)):
+            if time_rel[i] <= time_rel[i - 1]:
+                time_rel[i] = time_rel[i - 1] + 1e-4
+
         thumb_arr = np.array(thumb, dtype=np.float64)
         index_arr = np.array(index, dtype=np.float64)
         wrist_arr = np.array(wrist, dtype=np.float64)
 
-        # Compute continuous Euclidean distance between thumb and index tip in 3D
+        # Compute true 3D Euclidean distance between thumb tip and index tip:
+        # d = np.linalg.norm(thumb_array - index_array, axis=1) using (x, y, z)
         diff = thumb_arr - index_arr
         euclidean_dist = np.linalg.norm(diff, axis=1)
 
+        # Scale-normalization reference length L_ref = ||p_wrist - p_middle_mcp||_2
+        if any(pt is not None for pt in mcp):
+            mcp_cleaned = [pt if pt is not None else wrist[i] for i, pt in enumerate(mcp)]
+            mcp_arr = np.array(mcp_cleaned, dtype=np.float64)
+            l_ref = np.linalg.norm(wrist_arr - mcp_arr, axis=1)
+            l_ref = np.where(l_ref > 1e-4, l_ref, 1.0)
+            normalized_aperture = euclidean_dist / l_ref
+        else:
+            mcp_arr = np.empty((0, 3), dtype=np.float64)
+            l_ref = np.ones_like(euclidean_dist)
+            normalized_aperture = euclidean_dist.copy()
+
         return {
             "time": time_rel,
+            "timestamps": time_rel,
             "thumb_tip": thumb_arr,
             "index_tip": index_arr,
             "wrist": wrist_arr,
+            "middle_mcp": mcp_arr,
             "euclidean_distance": euclidean_dist,
+            "raw_distance": euclidean_dist,
+            "l_ref": l_ref,
+            "normalized_aperture": normalized_aperture,
+            "aperture": normalized_aperture,
+            "distance": normalized_aperture,
         }
 
     def is_ready(self, min_samples: int = 45) -> bool:
@@ -402,6 +511,7 @@ class VisionPipeline:
                 thumb_tip=norm[THUMB_TIP_IDX],
                 index_tip=norm[INDEX_TIP_IDX],
                 wrist=norm[WRIST_IDX],
+                middle_mcp=norm[MIDDLE_MCP_IDX],
             )
         return annotated_frame, data
 

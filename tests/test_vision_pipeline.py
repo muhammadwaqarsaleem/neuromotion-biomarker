@@ -90,6 +90,35 @@ class TestKinematicBuffer(unittest.TestCase):
         self.assertEqual(len(series["euclidean_distance"]), 1)
         self.assertAlmostEqual(series["euclidean_distance"][0], 5.0)
 
+    def test_strictly_monotonic_timestamps(self):
+        buf = KinematicBuffer(buffer_size=10)
+        # Push timestamps that have duplicate or jitter values
+        buf.push(10.0, (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        buf.push(10.0, (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        buf.push(10.05, (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        series = buf.get_time_series()
+        t = series["time"]
+        self.assertEqual(len(t), 3)
+        self.assertTrue(np.all(np.diff(t) > 0))
+        self.assertAlmostEqual(t[0], 0.0)
+
+    def test_scale_normalized_aperture(self):
+        buf = KinematicBuffer(buffer_size=10)
+        # Wrist at (0, 0, 0), Middle MCP at (0, 0.20, 0) -> L_ref = 0.20
+        # Thumb at (0, 0, 0), Index at (0.10, 0, 0) -> Euclidean distance = 0.10
+        # Normalized aperture A(t) = 0.10 / 0.20 = 0.50
+        buf.push(
+            timestamp=1.0,
+            thumb_tip=(0.0, 0.0, 0.0),
+            index_tip=(0.10, 0.0, 0.0),
+            wrist=(0.0, 0.0, 0.0),
+            middle_mcp=(0.0, 0.20, 0.0),
+        )
+        series = buf.get_time_series()
+        self.assertAlmostEqual(series["euclidean_distance"][0], 0.10)
+        self.assertAlmostEqual(series["l_ref"][0], 0.20)
+        self.assertAlmostEqual(series["normalized_aperture"][0], 0.50)
+
     def test_thread_safety(self):
         buf = KinematicBuffer(buffer_size=50)
 

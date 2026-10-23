@@ -270,8 +270,8 @@ def draw_hud(
 def run_interactive_vision_test(
     camera_id: int = 0,
     buffer_size: int = 150,
-    width: int = 1280,
-    height: int = 720,
+    width: int = 640,
+    height: int = 480,
 ) -> None:
     """
     Launch interactive OpenCV video capture and HUD visualization.
@@ -279,8 +279,8 @@ def run_interactive_vision_test(
     Args:
         camera_id: System camera index (default: 0).
         buffer_size: Rolling KinematicBuffer size.
-        width: Requested camera frame width.
-        height: Requested camera frame height.
+        width: Requested camera frame width (enforced to 640).
+        height: Requested camera frame height (enforced to 480).
     """
     print("=" * 65)
     print("NeuroMotion - Core Vision & Kinematic Verification Test")
@@ -290,23 +290,17 @@ def run_interactive_vision_test(
     print("Exit Key            : Press 'q' or 'ESC' in the display window.")
     print("-" * 65)
 
-    # Initialize Camera Capture
-    if sys.platform.startswith("win"):
-        cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            cap.release()
-            cap = cv2.VideoCapture(camera_id)
-    else:
-        cap = cv2.VideoCapture(camera_id)
+    # Initialize Camera Capture with explicit 640x480 resolution
+    cap = HandTracker.create_capture(camera_id=camera_id, width=width, height=height)
 
     if not cap.isOpened():
         print(f"[ERROR] Could not open video capture device at index {camera_id}.")
         print("[INFO] If testing in a headless environment, run with '--smoke-test'.")
         return
 
-    # Attempt setting desired resolution
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    # Explicitly enforce 640x480 resolution on OpenCV capture
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     tracker = HandTracker(
         static_image_mode=False,
@@ -322,6 +316,9 @@ def run_interactive_vision_test(
     alpha_fps = 0.15
 
     print("[STATUS] Live video stream started. Tracking hand kinematics...")
+
+    # Create resizable display window without black borders
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 
     try:
         while True:
