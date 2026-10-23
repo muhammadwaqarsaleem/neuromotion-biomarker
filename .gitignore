@@ -70,6 +70,9 @@ htmlcov/
 *.mkv
 *.webm
 *.h264
+!assets/*.mp4
+!assets/*.avi
+
 
 # Streamlit specific
 .streamlit/secrets.toml

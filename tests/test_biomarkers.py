@@ -47,6 +47,8 @@ from core.vision import (
     WRIST_IDX,
     HandTracker,
     KinematicBuffer,
+    draw_clinical_hud as core_draw_clinical_hud,
+    draw_waveform_canvas,
 )
 
 WINDOW_NAME = "NeuroMotion - Biomarker & MDS-UPDRS Clinical Assessment"
@@ -88,84 +90,6 @@ def generate_ascii_sparkline(data: np.ndarray, width: int = 24) -> str:
     return spark
 
 
-def draw_waveform_canvas(
-    frame: np.ndarray,
-    distance_series: np.ndarray,
-    peak_indices: np.ndarray,
-    origin: Tuple[int, int],
-    size: Tuple[int, int],
-) -> None:
-    """
-    Draw a real-time mini waveform monitor on the OpenCV frame.
-
-    Args:
-        frame: Destination BGR image array.
-        distance_series: 1D array of rolling finger aperture values.
-        peak_indices: Frame indices of detected tap peaks.
-        origin: (x, y) top-left coordinates of the monitor widget.
-        size: (width, height) of the monitor widget.
-    """
-    x, y = origin
-    w, h = size
-    h_frame, w_frame = frame.shape[:2]
-
-    if x + w > w_frame or y + h > h_frame:
-        return
-
-    # Background panel with slight transparency
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x, y), (x + w, y + h), (15, 18, 24), -1)
-    cv2.addWeighted(overlay, 0.78, frame, 0.22, 0, frame)
-
-    # Cyan border and grid line
-    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 180, 220), 1, cv2.LINE_AA)
-    mid_y = y + h // 2
-    cv2.line(frame, (x, mid_y), (x + w, mid_y), (35, 45, 55), 1, cv2.LINE_AA)
-
-    # Title label
-    cv2.putText(
-        frame,
-        "Norm Aperture A(t)",
-        (x + 8, y + 14),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.36,
-        (180, 210, 230),
-        1,
-        cv2.LINE_AA,
-    )
-
-    n_pts = len(distance_series)
-    if n_pts < 2:
-        return
-
-    # Dynamic scaling between 0.0 and max (at least 0.6)
-    min_val = 0.0
-    max_val = max(0.60, float(np.max(distance_series)))
-    val_range = max_val - min_val
-
-    margin_x = 8
-    margin_y = 20
-    usable_w = w - 2 * margin_x
-    usable_h = h - margin_y - 8
-
-    pts = []
-    for i, val in enumerate(distance_series):
-        pt_x = int(x + margin_x + (i / (n_pts - 1)) * usable_w)
-        norm_y = (val - min_val) / val_range
-        norm_y = max(0.0, min(1.0, norm_y))
-        pt_y = int(y + h - 6 - norm_y * usable_h)
-        pts.append((pt_x, pt_y))
-
-    pts_arr = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
-    cv2.polylines(frame, [pts_arr], isClosed=False, color=(0, 255, 180), thickness=2, lineType=cv2.LINE_AA)
-
-    # Highlight detected peaks
-    peak_set = set(peak_indices.tolist()) if len(peak_indices) > 0 else set()
-    for idx in peak_set:
-        if 0 <= idx < len(pts):
-            cv2.circle(frame, pts[idx], 4, (0, 220, 255), -1, cv2.LINE_AA)
-
-
 def draw_clinical_hud(
     frame: np.ndarray,
     fps: float,
@@ -177,196 +101,33 @@ def draw_clinical_hud(
     session_taps: int,
     instantaneous_cadence: float,
     trial_status: Dict[str, Any],
-    tap_metrics: Dict[str, Any],
-    updrs_tapping: Dict[str, Any],
-    tremor_metrics: Dict[str, Any],
-    updrs_tremor: Dict[str, Any],
-    distance_series: np.ndarray,
+    tap_metrics: Optional[Dict[str, Any]] = None,
+    updrs_tapping: Optional[Dict[str, Any]] = None,
+    tremor_metrics: Optional[Dict[str, Any]] = None,
+    updrs_tremor: Optional[Dict[str, Any]] = None,
+    distance_series: Optional[np.ndarray] = None,
+    scale_factor: float = 0.0,
 ) -> np.ndarray:
-    """
-    Render medical Heads-Up Display (HUD) overlay containing real-time kinematic biomarkers,
-    trial countdown/scores, scale-normalized aperture bar, and handedness telemetry.
+    """Delegate to polished clinical HUD overlay in core.vision."""
+    return core_draw_clinical_hud(
+        frame=frame,
+        fps=fps,
+        buffer_len=buffer_len,
+        buffer_capacity=buffer_capacity,
+        handedness_str=handedness_str,
+        current_aperture=current_aperture,
+        current_state=current_state,
+        session_taps=session_taps,
+        instantaneous_cadence=instantaneous_cadence,
+        trial_status=trial_status,
+        tap_metrics=tap_metrics,
+        updrs_tapping=updrs_tapping,
+        tremor_metrics=tremor_metrics,
+        updrs_tremor=updrs_tremor,
+        distance_series=distance_series,
+        scale_factor=scale_factor,
+    )
 
-    Args:
-        frame: Annotated BGR camera frame (640x480).
-        fps: Measured frame acquisition rate.
-        buffer_len: Current sample count in rolling buffer.
-        buffer_capacity: Max capacity of rolling buffer.
-        handedness_str: String representation of handedness ("Right (0.98)").
-        current_aperture: Instantaneous scale-normalized aperture A(t).
-        current_state: Active tap state machine state (TOUCH, OPENING, PEAK, CLOSING).
-        session_taps: Strictly non-decreasing session tap counter.
-        instantaneous_cadence: Live cadence (Hz) from the last 5 confirmed taps.
-        trial_status: Dictionary from TappingTrialManager (state, remaining_time, metrics, score).
-        tap_metrics: Rolling tap metrics for fallback/diagnostics.
-        updrs_tapping: Live MDS-UPDRS Task 3.4 score dictionary.
-        tremor_metrics: Spectral tremor decomposition metrics.
-        updrs_tremor: Clinical tremor rating from MDSUPDRSScorer.
-        distance_series: Rolling time-series of finger aperture.
-
-    Returns:
-        Frame with comprehensive clinical telemetry HUD.
-    """
-    h, w = frame.shape[:2]
-    font = cv2.FONT_HERSHEY_SIMPLEX
-
-    # =========================================================================
-    # 1. TOP BAR: FPS, Camera Resolution, Handedness
-    # =========================================================================
-    top_bar_h = 32
-    top_overlay = frame.copy()
-    cv2.rectangle(top_overlay, (0, 0), (w, top_bar_h), (12, 14, 18), -1)
-    cv2.addWeighted(top_overlay, 0.85, frame, 0.15, 0, frame)
-    cv2.line(frame, (0, top_bar_h), (w, top_bar_h), (40, 50, 65), 1, cv2.LINE_AA)
-
-    # Left: System Title & Resolution
-    cv2.putText(frame, "NEUROMOTION CORE", (12, 21), font, 0.48, (0, 255, 200), 2, cv2.LINE_AA)
-    cv2.putText(frame, f"Res: {w}x{h} (MJPG)", (180, 21), font, 0.42, (180, 190, 205), 1, cv2.LINE_AA)
-
-    # Middle: FPS
-    fps_color = (0, 255, 128) if fps >= 25.0 else ((0, 200, 255) if fps >= 18.0 else (0, 80, 255))
-    cv2.putText(frame, f"FPS: {fps:4.1f}", (315, 21), font, 0.44, fps_color, 2, cv2.LINE_AA)
-
-    # Right: Explicit Handedness Label with confidence
-    hand_display = handedness_str if handedness_str else "None"
-    hand_color = (0, 230, 255) if "Right" in hand_display or "Left" in hand_display else (140, 150, 160)
-    cv2.putText(frame, f"Hand: {hand_display}", (w - 210, 21), font, 0.44, hand_color, 2, cv2.LINE_AA)
-
-    # =========================================================================
-    # 2. TRIAL STATUS BANNER (Middle HUD)
-    # =========================================================================
-    trial_state = trial_status.get("state", TappingTrialManager.IDLE)
-    rem_time = trial_status.get("remaining_time", 10.0)
-    trial_taps = trial_status.get("trial_taps_count", 0)
-
-    banner_x, banner_y = 14, 42
-    banner_w, banner_h = 370, 70
-
-    banner_overlay = frame.copy()
-    cv2.rectangle(banner_overlay, (banner_x, banner_y), (banner_x + banner_w, banner_y + banner_h), (16, 20, 28), -1)
-    cv2.addWeighted(banner_overlay, 0.82, frame, 0.18, 0, frame)
-
-    if trial_state == TappingTrialManager.IDLE:
-        # IDLE Banner
-        cv2.rectangle(frame, (banner_x, banner_y), (banner_x + banner_w, banner_y + banner_h), (0, 180, 220), 1, cv2.LINE_AA)
-        cv2.putText(frame, "MDS-UPDRS 3.4 TRIAL: IDLE", (banner_x + 12, banner_y + 24), font, 0.50, (0, 220, 255), 2, cv2.LINE_AA)
-        cv2.putText(frame, "Press SPACE or 'R' to start 10s test", (banner_x + 12, banner_y + 45), font, 0.40, (200, 210, 225), 1, cv2.LINE_AA)
-        cv2.putText(frame, "Tap thumb & index as fast & wide as possible", (banner_x + 12, banner_y + 61), font, 0.34, (140, 160, 180), 1, cv2.LINE_AA)
-
-    elif trial_state == TappingTrialManager.ACTIVE:
-        # ACTIVE Banner (Pulsing amber with countdown bar)
-        cv2.rectangle(frame, (banner_x, banner_y), (banner_x + banner_w, banner_y + banner_h), (0, 180, 255), 2, cv2.LINE_AA)
-        cv2.putText(frame, f"TRIAL ACTIVE: {rem_time:4.1f}s REMAINING", (banner_x + 12, banner_y + 24), font, 0.52, (0, 200, 255), 2, cv2.LINE_AA)
-        cv2.putText(frame, f"Trial Taps: {trial_taps}  |  Keep tapping!", (banner_x + 12, banner_y + 44), font, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
-
-        # 10-second countdown progress bar
-        bar_x, bar_y_prog = banner_x + 12, banner_y + 52
-        bar_w_prog, bar_h_prog = banner_w - 24, 10
-        cv2.rectangle(frame, (bar_x, bar_y_prog), (bar_x + bar_w_prog, bar_y_prog + bar_h_prog), (35, 40, 50), -1)
-        fill_w = int(round((10.0 - rem_time) / 10.0 * bar_w_prog))
-        fill_w = max(0, min(bar_w_prog, fill_w))
-        cv2.rectangle(frame, (bar_x, bar_y_prog), (bar_x + fill_w, bar_y_prog + bar_h_prog), (0, 220, 255), -1)
-
-    elif trial_state == TappingTrialManager.COMPLETED:
-        # COMPLETED Banner (Frozen Score & Detailed Breakdown)
-        trial_score_dict = trial_status.get("score") or updrs_tapping
-        trial_metrics_dict = trial_status.get("metrics") or tap_metrics
-        t_score = trial_score_dict.get("score", 0)
-        t_label = trial_score_dict.get("label", "Unknown")
-
-        score_colors = {
-            0: (0, 255, 128),   # Green: Normal
-            1: (0, 220, 255),   # Cyan: Slight
-            2: (0, 165, 255),   # Orange: Mild
-            3: (50, 80, 255),   # Red-Orange: Moderate
-            4: (0, 0, 255),     # Red: Severe
-        }
-        b_color = score_colors.get(t_score, (0, 255, 128))
-
-        # Expand banner height slightly for frozen detailed breakdown
-        banner_h = 80
-        cv2.rectangle(frame, (banner_x, banner_y), (banner_x + banner_w, banner_y + banner_h), b_color, 2, cv2.LINE_AA)
-        cv2.putText(frame, f"TRIAL RESULT -> MDS-UPDRS: SCORE {t_score} ({t_label})", (banner_x + 10, banner_y + 22), font, 0.44, b_color, 2, cv2.LINE_AA)
-
-        rate_val = trial_metrics_dict.get("tap_rate_hz", 0.0)
-        slope_val = trial_metrics_dict.get("amplitude_decay_slope", 0.0)
-        cv_val = trial_metrics_dict.get("rhythm_cv", 0.0)
-
-        cv2.putText(frame, f"Taps: {trial_taps} | Rate: {rate_val:.2f} Hz | Decay: {slope_val:+.3f}", (banner_x + 10, banner_y + 44), font, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"Rhythm CV: {cv_val:.2f}  (Press SPACE to re-test)", (banner_x + 10, banner_y + 64), font, 0.36, (180, 200, 220), 1, cv2.LINE_AA)
-
-    # =========================================================================
-    # 3. LIVE PERSISTENT TELEMETRY & APERTURE GAUGE
-    # =========================================================================
-    panel_y = banner_y + banner_h + 8
-    panel_h = 160
-    panel_w = 370
-    p_overlay = frame.copy()
-    cv2.rectangle(p_overlay, (banner_x, panel_y), (banner_x + panel_w, panel_y + panel_h), (16, 20, 28), -1)
-    cv2.addWeighted(p_overlay, 0.80, frame, 0.20, 0, frame)
-    cv2.rectangle(frame, (banner_x, panel_y), (banner_x + panel_w, panel_y + panel_h), (45, 55, 70), 1, cv2.LINE_AA)
-
-    line_y = panel_y + 22
-    dy = 24
-
-    # Persistent Session Tap Count (Strictly monotonic)
-    cv2.putText(frame, "Session Tap Count:", (banner_x + 12, line_y), font, 0.44, (190, 200, 215), 1, cv2.LINE_AA)
-    cv2.putText(frame, f"{session_taps} taps", (banner_x + 175, line_y), font, 0.52, (0, 255, 200), 2, cv2.LINE_AA)
-
-    # Instantaneous Cadence (from last 5 taps)
-    line_y += dy
-    cv2.putText(frame, "Cadence (Last 5):", (banner_x + 12, line_y), font, 0.44, (190, 200, 215), 1, cv2.LINE_AA)
-    cv2.putText(frame, f"{instantaneous_cadence:4.2f} Hz", (banner_x + 175, line_y), font, 0.50, (255, 255, 255), 2, cv2.LINE_AA)
-
-    # Active State Machine State (TOUCH, OPENING, PEAK, CLOSING)
-    line_y += dy
-    state_colors = {
-        TapState.TOUCH: (0, 255, 128),
-        TapState.OPENING: (0, 220, 255),
-        TapState.PEAK: (0, 255, 255),
-        TapState.CLOSING: (0, 165, 255),
-    }
-    st_color = state_colors.get(current_state, (200, 200, 200))
-    cv2.putText(frame, "Tap State:", (banner_x + 12, line_y), font, 0.44, (190, 200, 215), 1, cv2.LINE_AA)
-    cv2.putText(frame, f"[{current_state}]", (banner_x + 175, line_y), font, 0.48, st_color, 2, cv2.LINE_AA)
-
-    # Scale-Invariant Normalized Aperture A(t)
-    line_y += dy
-    cv2.putText(frame, "Norm Aperture A(t):", (banner_x + 12, line_y), font, 0.42, (190, 200, 215), 1, cv2.LINE_AA)
-    cv2.putText(frame, f"{current_aperture:4.2f} L_ref", (banner_x + 175, line_y), font, 0.46, (255, 220, 100), 2, cv2.LINE_AA)
-
-    # Normalized Aperture Mini-Bar Gauge
-    line_y += 14
-    gauge_x = banner_x + 12
-    gauge_w = panel_w - 24
-    gauge_h = 10
-    cv2.rectangle(frame, (gauge_x, line_y), (gauge_x + gauge_w, line_y + gauge_h), (30, 35, 45), -1)
-    fill_len = int(round(min(1.0, current_aperture / 1.0) * gauge_w))
-    fill_len = max(0, min(gauge_w, fill_len))
-    cv2.rectangle(frame, (gauge_x, line_y), (gauge_x + fill_len, line_y + gauge_h), st_color, -1)
-    cv2.rectangle(frame, (gauge_x, line_y), (gauge_x + gauge_w, line_y + gauge_h), (60, 70, 85), 1, cv2.LINE_AA)
-
-    # Touch threshold tick mark (0.22)
-    tick_x = gauge_x + int(0.22 * gauge_w)
-    cv2.line(frame, (tick_x, line_y - 2), (tick_x, line_y + gauge_h + 2), (0, 255, 128), 1, cv2.LINE_AA)
-
-    # =========================================================================
-    # 4. MINI WAVEFORM MONITOR (Top Right)
-    # =========================================================================
-    wave_w = 210
-    wave_h = 95
-    wave_x = w - wave_w - 14
-    wave_y = top_bar_h + 10
-    peak_indices = tap_metrics.get("peak_indices", np.empty((0,), dtype=int))
-    draw_waveform_canvas(frame, distance_series, peak_indices, (wave_x, wave_y), (wave_w, wave_h))
-
-    # =========================================================================
-    # 5. FOOTER INSTRUCTION BAR
-    # =========================================================================
-    footer_text = "SPACE/R: 10s Trial | 'q'/ESC: Exit & View Report"
-    cv2.putText(frame, footer_text, (14, h - 14), font, 0.42, (200, 210, 225), 1, cv2.LINE_AA)
-
-    return frame
 
 
 def print_clinical_report(
@@ -549,6 +310,7 @@ def run_interactive_biomarker_test(
                 middle_mcp = landmarks[MIDDLE_MCP_IDX]
                 handedness_str = str(hand_data["handedness"])
                 current_aperture = float(hand_data.get("normalized_aperture", 0.0))
+                scale_factor = float(hand_data.get("scale_factor", hand_data.get("l_ref", 0.0)))
 
                 # Ingest into thread-safe rolling buffer with middle_mcp for scale normalization
                 buffer.push(sample_t, thumb, index, wrist, middle_mcp)
@@ -559,6 +321,7 @@ def run_interactive_biomarker_test(
                 trial_status = sample_res["trial_status"]
             else:
                 handedness_str = ""
+                scale_factor = 0.0
 
             # Check trial status updates even if no hand on current frame
             if trial_status.get("state") == TappingTrialManager.ACTIVE:
@@ -596,6 +359,7 @@ def run_interactive_biomarker_test(
                 tremor_metrics=latest_tremor_metrics,
                 updrs_tremor=latest_updrs_tremor,
                 distance_series=distance_history,
+                scale_factor=scale_factor,
             )
 
             cv2.imshow(WINDOW_NAME, hud_frame)

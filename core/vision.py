@@ -207,28 +207,28 @@ class HandTracker:
             landmarks_norm[alias] = norm_coord
             landmarks_pixel[alias] = px_coord
 
-        # Compute scale-normalization reference length L_ref:
-        # Euclidean distance between Landmark 0 (Wrist) and Landmark 9 (Middle Finger MCP)
-        wrist_norm = np.array(landmarks_norm[WRIST_IDX], dtype=np.float64)
-        middle_mcp_norm = np.array(landmarks_norm[MIDDLE_MCP_IDX], dtype=np.float64)
-        thumb_norm = np.array(landmarks_norm[THUMB_TIP_IDX], dtype=np.float64)
-        index_norm = np.array(landmarks_norm[INDEX_TIP_IDX], dtype=np.float64)
+        # Compute scale-normalization anatomical scale factor using strictly 2D Euclidean distance (x, y):
+        # Scale Factor = sqrt((x_MCP9 - x_wrist)^2 + (y_MCP9 - y_wrist)^2)
+        wrist_2d = np.array(landmarks_norm[WRIST_IDX][:2], dtype=np.float64)
+        middle_mcp_2d = np.array(landmarks_norm[MIDDLE_MCP_IDX][:2], dtype=np.float64)
+        thumb_2d = np.array(landmarks_norm[THUMB_TIP_IDX][:2], dtype=np.float64)
+        index_2d = np.array(landmarks_norm[INDEX_TIP_IDX][:2], dtype=np.float64)
 
-        l_ref = float(np.linalg.norm(wrist_norm - middle_mcp_norm))
-        if l_ref < 1e-4:
-            l_ref = 1.0
+        scale_factor_raw = float(np.linalg.norm(middle_mcp_2d - wrist_2d))
+        scale_factor = max(scale_factor_raw, 1e-6)
 
-        # Compute raw Euclidean distance & scale-invariant normalized aperture A(t) = ||thumb - index|| / L_ref
-        raw_dist = float(np.linalg.norm(thumb_norm - index_norm))
-        normalized_aperture = float(raw_dist / l_ref)
+        # Normalized Aperture = sqrt((x_thumb - x_index)^2 + (y_thumb - y_index)^2) / Scale Factor
+        raw_dist_2d = float(np.linalg.norm(thumb_2d - index_2d))
+        normalized_aperture = float(raw_dist_2d / scale_factor)
 
         landmark_data: Dict[str, Any] = {
             "landmarks_norm": landmarks_norm,
             "landmarks_pixel": landmarks_pixel,
             "handedness": handedness_info,
             "timestamp": timestamp,
-            "l_ref": l_ref,
-            "raw_distance": raw_dist,
+            "l_ref": scale_factor,
+            "scale_factor": scale_factor,
+            "raw_distance": raw_dist_2d,
             "normalized_aperture": normalized_aperture,
             "aperture": normalized_aperture,
         }
@@ -402,21 +402,22 @@ class KinematicBuffer:
         index_arr = np.array(index, dtype=np.float64)
         wrist_arr = np.array(wrist, dtype=np.float64)
 
-        # Compute true 3D Euclidean distance between thumb tip and index tip:
-        # d = np.linalg.norm(thumb_array - index_array, axis=1) using (x, y, z)
-        diff = thumb_arr - index_arr
-        euclidean_dist = np.linalg.norm(diff, axis=1)
+        # Strictly 2D Euclidean distance between thumb tip and index tip in (x, y):
+        # d_2d = sqrt((x_thumb - x_index)^2 + (y_thumb - y_index)^2)
+        diff_2d = thumb_arr[:, :2] - index_arr[:, :2]
+        euclidean_dist = np.linalg.norm(diff_2d, axis=1)
 
-        # Scale-normalization reference length L_ref = ||p_wrist - p_middle_mcp||_2
+        # Anatomical Scale Factor = sqrt((x_MCP9 - x_wrist)^2 + (y_MCP9 - y_wrist)^2)
         if any(pt is not None for pt in mcp):
             mcp_cleaned = [pt if pt is not None else wrist[i] for i, pt in enumerate(mcp)]
             mcp_arr = np.array(mcp_cleaned, dtype=np.float64)
-            l_ref = np.linalg.norm(wrist_arr - mcp_arr, axis=1)
-            l_ref = np.where(l_ref > 1e-4, l_ref, 1.0)
-            normalized_aperture = euclidean_dist / l_ref
+            mcp_diff_2d = wrist_arr[:, :2] - mcp_arr[:, :2]
+            raw_scale = np.linalg.norm(mcp_diff_2d, axis=1)
+            scale_factor = np.maximum(raw_scale, 1e-6)
+            normalized_aperture = euclidean_dist / scale_factor
         else:
             mcp_arr = np.empty((0, 3), dtype=np.float64)
-            l_ref = np.ones_like(euclidean_dist)
+            scale_factor = np.ones_like(euclidean_dist)
             normalized_aperture = euclidean_dist.copy()
 
         return {
@@ -428,7 +429,8 @@ class KinematicBuffer:
             "middle_mcp": mcp_arr,
             "euclidean_distance": euclidean_dist,
             "raw_distance": euclidean_dist,
-            "l_ref": l_ref,
+            "l_ref": scale_factor,
+            "scale_factor": scale_factor,
             "normalized_aperture": normalized_aperture,
             "aperture": normalized_aperture,
             "distance": normalized_aperture,
@@ -522,3 +524,291 @@ class VisionPipeline:
     def close(self) -> None:
         """Clean up resources."""
         self.tracker.close()
+
+
+def draw_waveform_canvas(
+    frame: np.ndarray,
+    distance_series: np.ndarray,
+    peak_indices: np.ndarray,
+    origin: Tuple[int, int],
+    size: Tuple[int, int],
+) -> None:
+    """
+    Render a clean real-time mini waveform monitor onto an OpenCV frame.
+
+    Args:
+        frame: Destination BGR image array.
+        distance_series: 1D array of rolling finger aperture values.
+        peak_indices: Frame indices of detected tap peaks.
+        origin: (x, y) top-left coordinates of the monitor widget.
+        size: (width, height) of the monitor widget.
+    """
+    x, y = origin
+    w, h = size
+    h_frame, w_frame = frame.shape[:2]
+
+    if x + w > w_frame or y + h > h_frame:
+        return
+
+    # Semi-transparent background card
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x, y), (x + w, y + h), (14, 18, 26), -1)
+    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+
+    # Cyan/slate border and grid line
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 180, 220), 1, cv2.LINE_AA)
+    mid_y = y + h // 2
+    cv2.line(frame, (x, mid_y), (x + w, mid_y), (35, 45, 60), 1, cv2.LINE_AA)
+
+    # Title label
+    cv2.putText(
+        frame,
+        "Norm Aperture A(t)",
+        (x + 8, y + 14),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.36,
+        (180, 220, 240),
+        1,
+        cv2.LINE_AA,
+    )
+
+    n_pts = len(distance_series)
+    if n_pts < 2:
+        return
+
+    min_val = 0.0
+    max_val = max(0.60, float(np.max(distance_series)))
+    val_range = max_val - min_val
+
+    margin_x = 8
+    margin_y = 20
+    usable_w = w - 2 * margin_x
+    usable_h = h - margin_y - 8
+
+    pts = []
+    for i, val in enumerate(distance_series):
+        pt_x = int(x + margin_x + (i / (n_pts - 1)) * usable_w)
+        norm_y = (val - min_val) / val_range
+        norm_y = max(0.0, min(1.0, norm_y))
+        pt_y = int(y + h - 6 - norm_y * usable_h)
+        pts.append((pt_x, pt_y))
+
+    pts_arr = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
+    cv2.polylines(
+        frame, [pts_arr], isClosed=False, color=(0, 255, 180), thickness=2, lineType=cv2.LINE_AA
+    )
+
+    # Highlight detected peaks with bright emerald markers
+    peak_set = set(peak_indices.tolist()) if len(peak_indices) > 0 else set()
+    for idx in peak_set:
+        if 0 <= idx < len(pts):
+            cv2.circle(frame, pts[idx], 4, (0, 220, 255), -1, cv2.LINE_AA)
+
+
+def draw_clinical_hud(
+    frame: np.ndarray,
+    fps: float,
+    buffer_len: int,
+    buffer_capacity: int,
+    handedness_str: str,
+    current_aperture: float,
+    current_state: str,
+    session_taps: int,
+    instantaneous_cadence: float,
+    trial_status: Dict[str, Any],
+    tap_metrics: Optional[Dict[str, Any]] = None,
+    updrs_tapping: Optional[Dict[str, Any]] = None,
+    tremor_metrics: Optional[Dict[str, Any]] = None,
+    updrs_tremor: Optional[Dict[str, Any]] = None,
+    distance_series: Optional[np.ndarray] = None,
+    scale_factor: float = 0.0,
+) -> np.ndarray:
+    """
+    Render a polished medical Heads-Up Display (HUD) overlay onto the OpenCV frame.
+
+    Guarantees non-overlapping, line-spaced semi-transparent diagnostic cards:
+      - Top Left Card: Live FPS, Hand Tracking Status, Current Scale Ratio.
+      - Trial Overlay Card: Active Trial Status (Timer countdown, Tap Count, Real-time Cadence).
+      - Live Telemetry Card: Session Tap Count, Instantaneous Cadence, Tap State & Aperture Bar.
+      - Mini Waveform Monitor: Bottom-right corner without visual occlusion.
+
+    Args:
+        frame: Annotated BGR frame (e.g. 640x480).
+        fps: Measured frame acquisition rate.
+        buffer_len: Current sample count in rolling buffer.
+        buffer_capacity: Maximum capacity of rolling buffer.
+        handedness_str: String representation of handedness ("Right (0.98)").
+        current_aperture: Instantaneous scale-normalized aperture A(t).
+        current_state: Active tap state machine state (TOUCH, OPENING, PEAK, CLOSING).
+        session_taps: Strictly non-decreasing session tap counter.
+        instantaneous_cadence: Live cadence (Hz) from the last 5 confirmed taps.
+        trial_status: Dictionary from TappingTrialManager (state, remaining_time, metrics, score).
+        tap_metrics: Optional rolling tap metrics.
+        updrs_tapping: Optional live MDS-UPDRS Task 3.4 score dictionary.
+        tremor_metrics: Optional spectral tremor decomposition metrics.
+        updrs_tremor: Optional clinical tremor rating.
+        distance_series: Optional rolling time-series of finger aperture.
+        scale_factor: Anatomical scale factor L_ref (Wrist to Middle MCP).
+
+    Returns:
+        Frame with polished clinical telemetry HUD.
+    """
+    h, w = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    tap_metrics = tap_metrics or {}
+    updrs_tapping = updrs_tapping or {}
+    tremor_metrics = tremor_metrics or {}
+    updrs_tremor = updrs_tremor or {}
+
+    # =========================================================================
+    # CARD 1: TOP-LEFT DIAGNOSTIC CARD (Non-overlapping: x=12..232, y=10..86)
+    # =========================================================================
+    c1_x, c1_y = 12, 10
+    c1_w, c1_h = 220, 76
+    c1_overlay = frame.copy()
+    cv2.rectangle(c1_overlay, (c1_x, c1_y), (c1_x + c1_w, c1_y + c1_h), (12, 16, 24), -1)
+    cv2.addWeighted(c1_overlay, 0.85, frame, 0.15, 0, frame)
+    cv2.rectangle(frame, (c1_x, c1_y), (c1_x + c1_w, c1_y + c1_h), (40, 55, 75), 1, cv2.LINE_AA)
+
+    # Line 1: Live FPS & Brand
+    fps_color = (0, 255, 128) if fps >= 25.0 else ((0, 200, 255) if fps >= 18.0 else (0, 80, 255))
+    cv2.putText(frame, f"FPS: {fps:4.1f}", (c1_x + 10, c1_y + 20), font, 0.44, fps_color, 2, cv2.LINE_AA)
+    cv2.putText(frame, "| NeuroMotion", (c1_x + 95, c1_y + 20), font, 0.40, (160, 210, 230), 1, cv2.LINE_AA)
+
+    # Line 2: Hand Tracking Status
+    is_tracked = bool(handedness_str and handedness_str != "None" and "Unknown" not in handedness_str)
+    hand_color = (0, 255, 200) if is_tracked else (0, 165, 255)
+    hand_status_txt = f"Hand: {handedness_str}" if is_tracked else "Hand: Searching..."
+    cv2.putText(frame, hand_status_txt, (c1_x + 10, c1_y + 43), font, 0.40, hand_color, 1, cv2.LINE_AA)
+
+    # Line 3: Current Scale Ratio
+    scale_val = scale_factor if scale_factor > 0 else 0.0
+    cv2.putText(frame, f"Scale: {scale_val:.3f} L_ref (2D)", (c1_x + 10, c1_y + 65), font, 0.38, (240, 240, 240), 1, cv2.LINE_AA)
+
+    # =========================================================================
+    # CARD 2: TRIAL OVERLAY CARD (Top-Right / Middle: x=242..628, y=10..86)
+    # =========================================================================
+    trial_state = trial_status.get("state", "IDLE")
+    rem_time = trial_status.get("remaining_time", 10.0)
+    trial_taps = trial_status.get("trial_taps_count", 0)
+
+    c2_x, c2_y = 242, 10
+    c2_w = w - c2_x - 12
+    c2_h = 76
+
+    c2_overlay = frame.copy()
+    cv2.rectangle(c2_overlay, (c2_x, c2_y), (c2_x + c2_w, c2_y + c2_h), (14, 18, 28), -1)
+    cv2.addWeighted(c2_overlay, 0.85, frame, 0.15, 0, frame)
+
+    if trial_state == "IDLE":
+        cv2.rectangle(frame, (c2_x, c2_y), (c2_x + c2_w, c2_y + c2_h), (0, 180, 220), 1, cv2.LINE_AA)
+        cv2.putText(frame, "MDS-UPDRS 3.4 TRIAL: IDLE", (c2_x + 10, c2_y + 22), font, 0.46, (0, 220, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, "Press SPACE or 'R' to Start 10s Formal Trial", (c2_x + 10, c2_y + 44), font, 0.38, (240, 240, 240), 1, cv2.LINE_AA)
+        cv2.putText(frame, "Tap thumb & index as fast & wide as possible", (c2_x + 10, c2_y + 64), font, 0.33, (150, 175, 195), 1, cv2.LINE_AA)
+
+    elif trial_state == "ACTIVE":
+        cv2.rectangle(frame, (c2_x, c2_y), (c2_x + c2_w, c2_y + c2_h), (0, 200, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, f"TRIAL ACTIVE: {rem_time:4.1f}s REMAINING", (c2_x + 10, c2_y + 22), font, 0.46, (0, 220, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Taps: {trial_taps}  |  Cadence: {instantaneous_cadence:4.2f} Hz", (c2_x + 10, c2_y + 42), font, 0.40, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # 10s Progress Bar
+        bar_x = c2_x + 10
+        bar_y = c2_y + 52
+        bar_w = c2_w - 20
+        bar_h = 12
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (35, 42, 55), -1)
+        fill_w = int(round((10.0 - rem_time) / 10.0 * bar_w))
+        fill_w = max(0, min(bar_w, fill_w))
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), (0, 220, 255), -1)
+
+    elif trial_state == "COMPLETED":
+        trial_score_dict = trial_status.get("score") or updrs_tapping
+        trial_metrics_dict = trial_status.get("metrics") or tap_metrics
+        t_score = trial_score_dict.get("score", 0)
+        t_label = trial_score_dict.get("label", "Unknown")
+
+        score_colors = {
+            0: (0, 255, 128),  # Normal (Green)
+            1: (0, 220, 255),  # Slight (Cyan)
+            2: (0, 165, 255),  # Mild (Orange)
+            3: (50, 80, 255),  # Moderate (Red-Orange)
+            4: (0, 0, 255),    # Severe (Red)
+        }
+        b_color = score_colors.get(t_score, (0, 255, 128))
+        cv2.rectangle(frame, (c2_x, c2_y), (c2_x + c2_w, c2_y + c2_h), b_color, 2, cv2.LINE_AA)
+
+        cv2.putText(frame, f"TRIAL RESULT -> SCORE {t_score} ({t_label})", (c2_x + 10, c2_y + 22), font, 0.44, b_color, 2, cv2.LINE_AA)
+        rate_val = trial_metrics_dict.get("tap_rate_hz", 0.0)
+        slope_val = trial_metrics_dict.get("amplitude_decay_slope", 0.0)
+        cv_val = trial_metrics_dict.get("rhythm_cv", 0.0)
+        cv2.putText(frame, f"Taps: {trial_taps} in 10s | Rate: {rate_val:.2f} Hz | Slope: {slope_val:+.3f}", (c2_x + 10, c2_y + 44), font, 0.36, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"Rhythm CV: {cv_val:.2f}  (Press SPACE to re-test)", (c2_x + 10, c2_y + 64), font, 0.34, (180, 210, 235), 1, cv2.LINE_AA)
+
+    # =========================================================================
+    # CARD 3: LIVE PERSISTENT TELEMETRY (Non-overlapping: x=12..232, y=94..246)
+    # =========================================================================
+    c3_x, c3_y = 12, 94
+    c3_w, c3_h = 220, 152
+    c3_overlay = frame.copy()
+    cv2.rectangle(c3_overlay, (c3_x, c3_y), (c3_x + c3_w, c3_y + c3_h), (12, 16, 24), -1)
+    cv2.addWeighted(c3_overlay, 0.85, frame, 0.15, 0, frame)
+    cv2.rectangle(frame, (c3_x, c3_y), (c3_x + c3_w, c3_y + c3_h), (40, 55, 75), 1, cv2.LINE_AA)
+
+    # Session Tap Count
+    cv2.putText(frame, "Session Taps:", (c3_x + 10, c3_y + 22), font, 0.40, (190, 205, 220), 1, cv2.LINE_AA)
+    cv2.putText(frame, f"{session_taps} taps", (c3_x + 120, c3_y + 22), font, 0.46, (0, 255, 200), 2, cv2.LINE_AA)
+
+    # Instantaneous Cadence
+    cv2.putText(frame, "Cadence:", (c3_x + 10, c3_y + 46), font, 0.40, (190, 205, 220), 1, cv2.LINE_AA)
+    cv2.putText(frame, f"{instantaneous_cadence:4.2f} Hz", (c3_x + 120, c3_y + 46), font, 0.46, (255, 255, 255), 2, cv2.LINE_AA)
+
+    # Tap State
+    state_colors = {
+        "TOUCH": (0, 255, 128),
+        "OPENING": (255, 220, 0),
+        "PEAK": (0, 255, 255),
+        "CLOSING": (0, 165, 255),
+    }
+    st_color = state_colors.get(current_state, (200, 200, 200))
+    cv2.putText(frame, "Tap State:", (c3_x + 10, c3_y + 70), font, 0.40, (190, 205, 220), 1, cv2.LINE_AA)
+    cv2.putText(frame, f"[{current_state}]", (c3_x + 120, c3_y + 70), font, 0.44, st_color, 2, cv2.LINE_AA)
+
+    # Scale-Normalized Aperture
+    cv2.putText(frame, "Aperture A(t):", (c3_x + 10, c3_y + 96), font, 0.40, (190, 205, 220), 1, cv2.LINE_AA)
+    cv2.putText(frame, f"{current_aperture:4.2f} L_ref", (c3_x + 120, c3_y + 96), font, 0.44, (255, 220, 100), 2, cv2.LINE_AA)
+
+    # Aperture Mini-Bar Gauge
+    g_x = c3_x + 10
+    g_y = c3_y + 112
+    g_w = c3_w - 20
+    g_h = 12
+    cv2.rectangle(frame, (g_x, g_y), (g_x + g_w, g_y + g_h), (28, 34, 46), -1)
+    fill_len = int(round(min(1.0, current_aperture / 1.0) * g_w))
+    fill_len = max(0, min(g_w, fill_len))
+    cv2.rectangle(frame, (g_x, g_y), (g_x + fill_len, g_y + g_h), st_color, -1)
+    cv2.rectangle(frame, (g_x, g_y), (g_x + g_w, g_y + g_h), (55, 68, 85), 1, cv2.LINE_AA)
+
+    # Touch threshold tick mark (0.22)
+    tick_x = g_x + int(0.22 * g_w)
+    cv2.line(frame, (tick_x, g_y - 2), (tick_x, g_y + g_h + 2), (0, 255, 128), 2, cv2.LINE_AA)
+    cv2.putText(frame, "Touch Thresh: 0.22", (c3_x + 10, c3_y + 140), font, 0.32, (150, 175, 195), 1, cv2.LINE_AA)
+
+    # =========================================================================
+    # MINI WAVEFORM MONITOR (Bottom-Right: x=400..628, y=360..456)
+    # =========================================================================
+    if distance_series is not None and len(distance_series) > 1:
+        wave_w = 228
+        wave_h = 96
+        wave_x = w - wave_w - 12
+        wave_y = h - wave_h - 24
+        peak_indices = tap_metrics.get("peak_indices", np.empty((0,), dtype=int))
+        draw_waveform_canvas(frame, distance_series, peak_indices, (wave_x, wave_y), (wave_w, wave_h))
+
+    # =========================================================================
+    # FOOTER INSTRUCTION BAR (y = h - 8)
+    # =========================================================================
+    footer_text = "SPACE/R: 10s Trial | 'q'/ESC: Exit | 2D Scale-Normalized"
+    cv2.putText(frame, footer_text, (12, h - 8), font, 0.38, (180, 200, 220), 1, cv2.LINE_AA)
+
+    return frame
+
