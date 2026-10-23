@@ -19,6 +19,8 @@ from core.vision import (
     INDEX_TIP_IDX,
     MIDDLE_TIP_IDX,
     KEY_LANDMARK_INDICES,
+    draw_clinical_hud,
+    draw_trial_complete_overlay,
 )
 
 
@@ -196,6 +198,42 @@ class TestVisionPipelineFacade(unittest.TestCase):
         series = pipeline.get_kinematic_series()
         self.assertEqual(len(series["time"]), 0)
         pipeline.close()
+
+
+class TestTrialCompleteOverlay(unittest.TestCase):
+    """Test in-frame 'TRIAL EVALUATION COMPLETE' banner card rendering."""
+
+    def test_overlay_rendering(self):
+        canvas = np.zeros((480, 640, 3), dtype=np.uint8)
+        rendered = draw_trial_complete_overlay(
+            frame=canvas,
+            trial_status={"state": "COMPLETED", "remaining_time": 0.0},
+            score_data={"score": 0, "label": "Normal"},
+            metric_data={"total_taps": 28, "tap_rate_hz": 2.80},
+        )
+        self.assertEqual(rendered.shape, (480, 640, 3))
+        # Ensure overlay painted onto the blank canvas (pixel values non-zero)
+        self.assertGreater(int(np.sum(rendered)), 0)
+
+    def test_overlay_handles_none_and_empty(self):
+        self.assertIsNone(draw_trial_complete_overlay(None))
+        empty = np.zeros((0, 0, 3), dtype=np.uint8)
+        self.assertEqual(draw_trial_complete_overlay(empty).size, 0)
+
+    def test_flip_horizontal_consistency(self):
+        tracker = HandTracker()
+        test_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        test_frame[10:20, 10:20] = 255  # asymmetric pattern
+        
+        # Test default flip_horizontal=False preserves frame orientation
+        ann1, _ = tracker.process_frame(test_frame, flip_horizontal=False)
+        self.assertEqual(ann1.shape, (100, 100, 3))
+        self.assertEqual(ann1[15, 15, 0], 255)
+        
+        # Test flip_horizontal=True mirrors horizontally
+        ann2, _ = tracker.process_frame(test_frame, flip_horizontal=True)
+        self.assertEqual(ann2[15, 85, 0], 255)
+        tracker.close()
 
 
 if __name__ == "__main__":

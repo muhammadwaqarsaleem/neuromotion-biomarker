@@ -49,6 +49,7 @@ from core.vision import (
     HandTracker,
     KinematicBuffer,
     draw_clinical_hud,
+    draw_trial_complete_overlay,
 )
 
 # =============================================================================
@@ -137,16 +138,19 @@ st.markdown(
         color: #1d4ed8 !important;
     }
 
-    /* Metric Cards in Right Column */
+    /* Metric Cards in Right Column - Full Width, Generous Padding */
     .metric-card {
+        width: 100% !important;
+        box-sizing: border-box !important;
         background: #ffffff;
         border: 1px solid #e2e8f0;
         border-radius: 10px;
-        padding: 16px 18px;
+        padding: 14px 18px !important;
+        line-height: 1.4 !important;
         text-align: left;
         box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
         border-left: 4px solid #0284c7;
-        margin-bottom: 6px;
+        margin-bottom: 8px;
     }
     .metric-card .title {
         font-size: 0.80rem;
@@ -154,30 +158,33 @@ st.markdown(
         text-transform: uppercase;
         letter-spacing: 0.05em;
         font-weight: 700;
-        margin-bottom: 4px;
+        margin-bottom: 6px;
+        line-height: 1.3;
     }
     .metric-card .value {
-        font-size: 1.65rem;
+        font-size: 1.60rem;
         font-weight: 800;
         color: #0f172a !important;
-        line-height: 1.2;
+        line-height: 1.3;
     }
     .metric-card .subtext {
         font-size: 0.78rem;
         color: #0284c7 !important;
         font-weight: 600;
-        margin-top: 4px;
+        margin-top: 6px;
+        line-height: 1.3;
     }
 
     /* Score Badges */
     .score-badge {
         display: inline-block;
-        padding: 6px 14px;
+        padding: 6px 12px;
         border-radius: 8px;
         font-weight: 800;
-        font-size: 0.95rem;
+        font-size: 0.88rem;
         letter-spacing: 0.03em;
         text-align: center;
+        white-space: nowrap;
     }
     .score-0 { background: #dcfce7; color: #15803d !important; border: 1.5px solid #22c55e; }
     .score-1 { background: #e0f2fe; color: #0369a1 !important; border: 1.5px solid #0284c7; }
@@ -186,7 +193,7 @@ st.markdown(
     .score-4 { background: #fee2e2; color: #b91c1c !important; border: 1.5px solid #ef4444; }
 
     /* =========================================================================
-       TEXT BOXES, INPUTS, SELECTBOXES & TEXTAREAS: TRANSPARENT WITH BLACK BORDERS
+       CLEAN, MODERN INPUT FIELDS & SELECTORS (ELIMINATE CLUNKY HEAVY BORDERS)
        ========================================================================= */
     div[data-baseweb="input"],
     div[data-baseweb="base-input"],
@@ -196,92 +203,102 @@ st.markdown(
     .stNumberInput > div > div,
     .stTextArea > div > div,
     .stSelectbox > div > div > div {
-        background-color: transparent !important;
-        background: transparent !important;
-        border: 1.5px solid #000000 !important;
+        border: 1px solid rgba(15, 23, 42, 0.15) !important;
         border-radius: 6px !important;
-        box-shadow: none !important;
+        background-color: rgba(255, 255, 255, 0.95) !important;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03) !important;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
+    }
+
+    /* Sidebar specific input styling */
+    section[data-testid="stSidebar"] div[data-baseweb="input"],
+    section[data-testid="stSidebar"] div[data-baseweb="base-input"],
+    section[data-testid="stSidebar"] div[data-baseweb="textarea"],
+    section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
+        border: 1px solid rgba(15, 23, 42, 0.15) !important;
+        border-radius: 6px !important;
+        background-color: #ffffff !important;
     }
 
     input, textarea, select {
         background-color: transparent !important;
-        background: transparent !important;
-        color: #000000 !important;
-        -webkit-text-fill-color: #000000 !important;
-        font-weight: 600 !important;
+        color: #0f172a !important;
+        -webkit-text-fill-color: #0f172a !important;
+        font-weight: 500 !important;
         font-size: 0.92rem !important;
     }
 
     /* Number input increment/decrement buttons */
     div[data-baseweb="input"] button {
         background-color: transparent !important;
-        color: #000000 !important;
-        border-left: 1px solid #000000 !important;
+        color: #334155 !important;
+        border-left: 1px solid rgba(15, 23, 42, 0.12) !important;
     }
     div[data-baseweb="input"] button:hover {
-        background-color: rgba(0, 0, 0, 0.05) !important;
+        background-color: rgba(0, 210, 106, 0.08) !important;
     }
     div[data-baseweb="input"] button svg {
-        fill: #000000 !important;
+        fill: #334155 !important;
     }
 
     /* Selectbox dropdown value & chevron */
     div[data-baseweb="select"] * {
         background-color: transparent !important;
-        color: #000000 !important;
+        color: #0f172a !important;
     }
     div[data-baseweb="select"] svg {
-        fill: #000000 !important;
+        fill: #475569 !important;
     }
 
-    /* Focus highlight */
+    /* Focus highlight - Emerald Green accent */
     div[data-baseweb="input"]:focus-within,
     div[data-baseweb="base-input"]:focus-within,
     div[data-baseweb="textarea"]:focus-within,
     div[data-baseweb="select"] > div:focus-within {
-        border-color: #0284c7 !important;
-        box-shadow: 0 0 0 1px #0284c7 !important;
+        border-color: #00d26a !important;
+        box-shadow: 0 0 0 2px rgba(0, 210, 106, 0.20) !important;
     }
 
     /* Dropdown popups */
     ul[data-baseweb="menu"] {
         background-color: #ffffff !important;
-        border: 1.5px solid #000000 !important;
+        border: 1px solid #cbd5e1 !important;
         border-radius: 6px !important;
+        box-shadow: 0 4px 16px rgba(15, 23, 42, 0.10) !important;
     }
     li[data-baseweb="menu-item"] {
         background-color: #ffffff !important;
-        color: #000000 !important;
+        color: #0f172a !important;
     }
     li[data-baseweb="menu-item"]:hover {
         background-color: #f1f5f9 !important;
     }
 
-    /* Action Buttons Toolbar - Generous padding, no clipping */
+    /* Action Buttons Toolbar - Generous padding, no clipping, refined border */
     div.stButton > button {
         width: 100% !important;
-        min-height: 48px !important;
-        padding: 12px 20px !important;
+        min-height: 44px !important;
+        padding: 10px 18px !important;
         margin: 2px 0 !important;
         white-space: nowrap !important;
         display: inline-flex !important;
         justify-content: center !important;
         align-items: center !important;
-        font-weight: 700 !important;
-        font-size: 0.92rem !important;
+        font-weight: 600 !important;
+        font-size: 0.90rem !important;
         border-radius: 8px !important;
-        border: 1.5px solid #000000 !important;
+        border: 1px solid #cbd5e1 !important;
         background-color: #ffffff !important;
         color: #0f172a !important;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05) !important;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05) !important;
         transition: all 0.15s ease-in-out !important;
     }
     div.stButton > button:hover {
-        border-color: #0284c7 !important;
-        color: #0284c7 !important;
-        background-color: #f0f9ff !important;
+        border-color: #00d26a !important;
+        color: #059669 !important;
+        background-color: #f0fdf4 !important;
         transform: translateY(-1px);
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08) !important;
+        box-shadow: 0 3px 6px rgba(0, 210, 106, 0.15) !important;
     }
     div.stButton > button[kind="primary"] {
         background-color: #0284c7 !important;
@@ -294,13 +311,27 @@ st.markdown(
         color: #ffffff !important;
     }
 
-    /* Score Card Containers in Light Mode */
+    /* Score Card Containers in Light Mode - Full Width Flex Containers */
     .clinical-score-card {
+        width: 100% !important;
+        box-sizing: border-box !important;
         background: #ffffff;
         border: 1px solid #cbd5e1;
         border-radius: 10px;
-        padding: 16px 18px;
+        padding: 14px 18px !important;
+        line-height: 1.4 !important;
         box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+        margin-bottom: 8px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+    }
+    .score-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
         margin-bottom: 8px;
     }
 
@@ -628,10 +659,7 @@ def build_waveform_plotly(
             )
 
     fig.update_layout(
-        title=dict(
-            text="Real-Time Kinematic Waveform: Normalized Aperture A(t)",
-            font=dict(size=14, color="#0f172a", family="Segoe UI, sans-serif"),
-        ),
+        margin=dict(l=20, r=20, t=15, b=20),
         xaxis=dict(
             title="Time (seconds)",
             color="#334155",
@@ -648,7 +676,6 @@ def build_waveform_plotly(
             showgrid=True,
             range=[0.0, max(0.65, float(np.max(apertures)) * 1.15 if len(apertures) > 0 else 0.65)],
         ),
-        margin=dict(l=40, r=20, t=40, b=40),
         plot_bgcolor="#ffffff",
         paper_bgcolor="#ffffff",
         height=260,
@@ -731,10 +758,7 @@ def build_psd_plotly(
             )
 
     fig.update_layout(
-        title=dict(
-            text="Task 3.15 Tremor Spectral Decomposition (Welch PSD)",
-            font=dict(size=14, color="#0f172a", family="Segoe UI, sans-serif"),
-        ),
+        margin=dict(l=20, r=20, t=15, b=20),
         xaxis=dict(
             title="Frequency (Hz)",
             color="#334155",
@@ -750,10 +774,9 @@ def build_psd_plotly(
             linecolor="#cbd5e1",
             showgrid=True,
         ),
-        margin=dict(l=40, r=20, t=40, b=40),
         plot_bgcolor="#ffffff",
         paper_bgcolor="#ffffff",
-        height=240,
+        height=260,
         showlegend=True,
         legend=dict(
             orientation="h",
@@ -940,6 +963,12 @@ with col_feed:
                     distance_series=ap_sim,
                     scale_factor=0.28,
                 )
+                hud_frame = draw_trial_complete_overlay(
+                    frame=hud_frame,
+                    trial_status=trial_res,
+                    score_data=updrs_tapping,
+                    metric_data=tap_metrics,
+                )
                 video_placeholder.image(cv2.cvtColor(hud_frame, cv2.COLOR_BGR2RGB), use_column_width=True)
             st.success("✅ Instant 10-Second Assessment Completed & Scored Successfully!")
 
@@ -991,25 +1020,42 @@ with col_feed:
             if not using_synthetic_fallback and cap is not None and cap.isOpened():
                 ret, raw_frame = cap.read()
                 if ret and raw_frame is not None and raw_frame.size > 0:
-                    frame, hand_data = tracker.process_frame(raw_frame)
+                    # Rule: Mirror effect applied strictly once unconditionally right after reading
+                    raw_frame = cv2.flip(raw_frame, 1)
+                    frame, hand_data = tracker.process_frame(raw_frame, flip_horizontal=False)
                 else:
                     # Loop video if pre-recorded
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     ret, raw_frame = cap.read()
                     if ret and raw_frame is not None and raw_frame.size > 0:
-                        frame, hand_data = tracker.process_frame(raw_frame)
+                        raw_frame = cv2.flip(raw_frame, 1)
+                        frame, hand_data = tracker.process_frame(raw_frame, flip_horizontal=False)
 
-            # Guaranteed robust fallback: syn_frames is ALWAYS defined
-            if frame is None or hand_data is None:
+            # Robust fallback and hand-transition handling
+            if frame is None:
                 syn_idx = min(frame_idx, len(syn_frames) - 1)
-                if raw_frame is not None and raw_frame.size > 0:
-                    frame = raw_frame.copy()
-                else:
-                    frame = syn_frames[syn_idx].copy()
+                frame = syn_frames[syn_idx].copy()
                 sample_t = curr_time
                 current_aperture = float(syn_ap[syn_idx])
                 scale_factor = 0.28
                 handedness_str = "Right (0.99)"
+                wrist_coords = (syn_wr[syn_idx][0], syn_wr[syn_idx][1], 0.0)
+                buffer.push(
+                    timestamp=sample_t,
+                    thumb_tip=(0.4, 0.4, 0.0),
+                    index_tip=(0.4 + current_aperture * scale_factor, 0.4, 0.0),
+                    wrist=wrist_coords,
+                    middle_mcp=(wrist_coords[0], wrist_coords[1] - scale_factor, 0.0),
+                )
+            elif hand_data is None:
+                # Live camera frame was acquired and mirrored, but hand is momentarily not detected
+                # (e.g. during hand transition between left and right hand).
+                # Keep the live mirrored 'frame' intact without overwriting or flipping!
+                syn_idx = min(frame_idx, len(syn_frames) - 1)
+                sample_t = curr_time
+                current_aperture = float(syn_ap[syn_idx])
+                scale_factor = 0.28
+                handedness_str = "Searching..."
                 wrist_coords = (syn_wr[syn_idx][0], syn_wr[syn_idx][1], 0.0)
                 buffer.push(
                     timestamp=sample_t,
@@ -1095,6 +1141,18 @@ with col_feed:
             cap.release()
         tracker.close()
         set_state("stream_active", False)
+
+        # In-Frame Fullscreen-Friendly Trial Complete Overlay
+        latest_score = get_state("latest_updrs_tapping", {})
+        latest_metrics = get_state("latest_tap_metrics", {})
+        trial_complete_frame = draw_trial_complete_overlay(
+            frame=frame.copy() if frame is not None else syn_frames[-1].copy(),
+            trial_status={"state": "COMPLETED", "remaining_time": 0.0},
+            score_data=latest_score,
+            metric_data=latest_metrics,
+        )
+        video_placeholder.image(cv2.cvtColor(trial_complete_frame, cv2.COLOR_BGR2RGB), use_column_width=True)
+        countdown_container.progress(1.0, text="✅ **Assessment Concluded:** 10.0s trial processed. See clinical report below.")
         st.success("✅ Formal 10-Second Motor Assessment Concluded!")
 
     else:
@@ -1181,6 +1239,7 @@ with col_analytics:
 
     # 1. Live Aperture Waveform (Plotly)
     st.write("")
+    st.markdown("##### 📈 **Real-Time Kinematic Waveform: Normalized Aperture A(t)**")
     peak_times = metrics.get("peak_times")
     peak_amps = metrics.get("amplitudes")
     waveform_fig = build_waveform_plotly(
@@ -1192,6 +1251,7 @@ with col_analytics:
     st.plotly_chart(waveform_fig, use_container_width=True)
 
     # 2. Spectral Analysis (Tremor Task 3.15)
+    st.markdown("##### ⚡ **Task 3.15 Tremor Spectral Decomposition (Welch PSD)**")
     psd_fig = build_psd_plotly(
         freqs=tremor.get("freqs", np.array([])),
         psd=tremor.get("psd", np.array([])),
@@ -1210,7 +1270,7 @@ with col_analytics:
         st.markdown(
             f"""
             <div class="clinical-score-card">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <div class="score-card-header">
                     <span style="font-weight: 700; font-size: 0.95rem; color: #0f172a;">Task 3.4 Finger Tapping</span>
                     <span class="score-badge score-{t_score}">Score {t_score}: {t_label.upper()}</span>
                 </div>
@@ -1228,7 +1288,7 @@ with col_analytics:
         st.markdown(
             f"""
             <div class="clinical-score-card">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <div class="score-card-header">
                     <span style="font-weight: 700; font-size: 0.95rem; color: #0f172a;">Task 3.15 Tremor</span>
                     <span class="score-badge score-{tr_score}">Score {tr_score}: {tr_label.upper()}</span>
                 </div>

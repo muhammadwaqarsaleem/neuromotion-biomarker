@@ -117,17 +117,20 @@ class HandTracker:
         )
 
     def process_frame(
-        self, frame: np.ndarray
+        self, frame: np.ndarray, flip_horizontal: bool = False
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         """
-        Process a raw BGR frame from OpenCV, perform mirror flip, and extract keypoints.
+        Process an input BGR frame, extract hand keypoints, and draw annotations.
 
         Args:
-            frame: Raw BGR image array from camera or video stream.
+            frame: Raw or pre-mirrored BGR image array from camera or video stream.
+            flip_horizontal: If True, applies horizontal mirror flip. Defaults to False
+                under standard pipeline design where frame is unconditionally
+                mirrored at source ingest to prevent lateral flips on hand transition.
 
         Returns:
             Tuple of (annotated_frame, landmark_data):
-                - annotated_frame (np.ndarray): Horizontally flipped frame with drawn landmarks.
+                - annotated_frame (np.ndarray): Frame with drawn landmarks and connections.
                 - landmark_data (Optional[Dict[str, Any]]): Dictionary with structured data if
                   a hand is detected, else None. Contains:
                     - 'landmarks_norm': Dict of key landmark indices (0, 4, 8, 12) to (x, y, z).
@@ -141,19 +144,20 @@ class HandTracker:
         # Monotonic timestamp for time-synchronized signal processing
         timestamp = time.perf_counter()
 
-        # 1. Flip horizontally for natural mirror interaction
-        flipped_frame = cv2.flip(frame, 1)
-        h, w = flipped_frame.shape[:2]
+        # 1. Flip horizontally only if explicitly requested; otherwise use frame directly.
+        # Video frame mirror effect (selfie mode) is applied strictly once unconditionally at capture ingest.
+        proc_frame = cv2.flip(frame, 1) if flip_horizontal else frame.copy()
+        h, w = proc_frame.shape[:2]
 
         # 2. Convert BGR to RGB for MediaPipe inference
-        rgb_frame = cv2.cvtColor(flipped_frame, cv2.COLOR_BGR2RGB)
+        rgb_frame = cv2.cvtColor(proc_frame, cv2.COLOR_BGR2RGB)
         rgb_frame.flags.writeable = False
 
         # 3. Process via MediaPipe Hands
         results = self._hands.process(rgb_frame)
 
         # 4. Prepare annotated output frame
-        annotated_frame = flipped_frame.copy()
+        annotated_frame = proc_frame.copy()
 
         # Check if any hand landmarks were detected
         if not results.multi_hand_landmarks:
@@ -494,18 +498,19 @@ class VisionPipeline:
         self.buffer = KinematicBuffer(buffer_size=buffer_size)
 
     def process_frame(
-        self, frame: np.ndarray
+        self, frame: np.ndarray, flip_horizontal: bool = False
     ) -> Tuple[np.ndarray, Optional[Dict[str, Any]]]:
         """
         Process an input video frame, extract hand keypoints, and push to kinematic buffer.
 
         Args:
             frame: Input image array (BGR).
+            flip_horizontal: Whether to apply mirror flip during frame processing.
 
         Returns:
             Tuple of (annotated_frame, landmark_data).
         """
-        annotated_frame, data = self.tracker.process_frame(frame)
+        annotated_frame, data = self.tracker.process_frame(frame, flip_horizontal=flip_horizontal)
         if data is not None:
             norm = data["landmarks_norm"]
             self.buffer.push(
@@ -809,6 +814,183 @@ def draw_clinical_hud(
     # =========================================================================
     footer_text = "SPACE/R: 10s Trial | 'q'/ESC: Exit | 2D Scale-Normalized"
     cv2.putText(frame, footer_text, (12, h - 8), font, 0.38, (180, 200, 220), 1, cv2.LINE_AA)
+
+    return frame
+
+
+def draw_trial_complete_overlay(
+    frame: np.ndarray,
+    trial_status: Optional[Dict[str, Any]] = None,
+    score_data: Optional[Dict[str, Any]] = None,
+    metric_data: Optional[Dict[str, Any]] = None,
+) -> np.ndarray:
+    """
+    Render a clean, semi-transparent in-frame completion banner onto the final paused OpenCV frame.
+
+    Guarantees that participants in Streamlit fullscreen mode clearly see that
+    the 10-second assessment has concluded successfully, preventing confusion.
+
+    Args:
+        frame: Destination BGR image array (e.g. 640x480).
+        trial_status: Optional trial state information dictionary.
+        score_data: Optional MDS-UPDRS scoring dictionary (score, label, clinical_rationale).
+        metric_data: Optional kinematic tap metrics dictionary (total_taps, tap_rate_hz).
+
+    Returns:
+        Frame with clinical 'TRIAL EVALUATION COMPLETE' overlay.
+    """
+    if frame is None or frame.size == 0:
+        return frame
+
+    h, w = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    score_data = score_data or {}
+    metric_data = metric_data or {}
+
+    # Card dimensions - centered and responsive to frame size
+    card_w = min(560, max(300, w - 40))
+    card_h = 162
+    card_x = max(10, (w - card_w) // 2)
+    card_y = max(10, (h - card_h) // 2 + 10)
+
+    # 1. Semi-transparent dark background card (deep medical slate navy)
+    overlay = frame.copy()
+    cv2.rectangle(
+        overlay,
+        (card_x, card_y),
+        (card_x + card_w, card_y + card_h),
+        (12, 16, 26),
+        -1,
+    )
+    cv2.addWeighted(overlay, 0.88, frame, 0.12, 0, frame)
+
+    # 2. Sleek Emerald Green accent border & subtle inner border
+    cv2.rectangle(
+        frame,
+        (card_x, card_y),
+        (card_x + card_w, card_y + card_h),
+        (0, 210, 106),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.rectangle(
+        frame,
+        (card_x + 3, card_y + 3),
+        (card_x + card_w - 3, card_y + card_h - 3),
+        (35, 50, 70),
+        1,
+        cv2.LINE_AA,
+    )
+
+    # 3. Top status pill badge: 'STATUS: PROCESSED'
+    badge_x = card_x + 18
+    badge_y = card_y + 14
+    badge_w = 175
+    badge_h = 24
+    cv2.rectangle(
+        frame,
+        (badge_x, badge_y),
+        (badge_x + badge_w, badge_y + badge_h),
+        (16, 44, 32),
+        -1,
+    )
+    cv2.rectangle(
+        frame,
+        (badge_x, badge_y),
+        (badge_x + badge_w, badge_y + badge_h),
+        (0, 210, 106),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.circle(frame, (badge_x + 12, badge_y + 12), 4, (0, 255, 128), -1, cv2.LINE_AA)
+    cv2.putText(
+        frame,
+        "STATUS: PROCESSED",
+        (badge_x + 22, badge_y + 16),
+        font,
+        0.36,
+        (0, 255, 150),
+        1,
+        cv2.LINE_AA,
+    )
+
+    # 4. Prominent Header Text (Bright White / Emerald Green)
+    cv2.putText(
+        frame,
+        "TRIAL EVALUATION COMPLETE",
+        (card_x + 18, card_y + 68),
+        font,
+        0.68,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+    # 5. Clear Subtitle (Fullscreen user guidance)
+    cv2.putText(
+        frame,
+        "MDS-UPDRS metrics ready. Minimize / scroll down to inspect report.",
+        (card_x + 18, card_y + 96),
+        font,
+        0.38,
+        (210, 230, 248),
+        1,
+        cv2.LINE_AA,
+    )
+
+    # 6. Dividing separator
+    cv2.line(
+        frame,
+        (card_x + 18, card_y + 112),
+        (card_x + card_w - 18, card_y + 112),
+        (38, 52, 72),
+        1,
+        cv2.LINE_AA,
+    )
+
+    # 7. Assessment Summary Metrics
+    t_score = score_data.get("score")
+    t_label = score_data.get("label", "Evaluation Ready")
+    total_taps = metric_data.get("total_taps", 0)
+    rate_hz = metric_data.get("tap_rate_hz", 0.0)
+
+    if t_score is not None:
+        score_colors = {
+            0: (0, 255, 128),  # Normal
+            1: (0, 220, 255),  # Slight
+            2: (0, 165, 255),  # Mild
+            3: (50, 80, 255),  # Moderate
+            4: (0, 0, 255),    # Severe
+        }
+        res_color = score_colors.get(t_score, (0, 255, 128))
+        summary_txt = f"Part III Task 3.4: Score {t_score} ({t_label})  |  {total_taps} Taps ({rate_hz:.2f} Hz)"
+    else:
+        res_color = (0, 220, 255)
+        summary_txt = f"Formal 10s Motor Assessment: {total_taps} Taps ({rate_hz:.2f} Hz) Recorded"
+
+    cv2.putText(
+        frame,
+        summary_txt,
+        (card_x + 18, card_y + 138),
+        font,
+        0.42,
+        res_color,
+        1,
+        cv2.LINE_AA,
+    )
+
+    # Press to restart hint on right side of bottom line if space permits
+    if card_w >= 500:
+        cv2.putText(
+            frame,
+            "Press 'Start Trial' to re-test",
+            (card_x + card_w - 195, card_y + 138),
+            font,
+            0.32,
+            (148, 163, 184),
+            1,
+            cv2.LINE_AA,
+        )
 
     return frame
 

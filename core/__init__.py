@@ -15,6 +15,8 @@ from .vision import (
     MIDDLE_MCP_IDX,
     MIDDLE_TIP_IDX,
     KEY_LANDMARK_INDICES,
+    draw_clinical_hud,
+    draw_trial_complete_overlay,
 )
 from .signal_processing import SignalFilter, SignalProcessor
 from .biomarkers import (
@@ -37,6 +39,8 @@ __all__ = [
     "MIDDLE_MCP_IDX",
     "MIDDLE_TIP_IDX",
     "KEY_LANDMARK_INDICES",
+    "draw_clinical_hud",
+    "draw_trial_complete_overlay",
     "SignalFilter",
     "SignalProcessor",
     "BiomarkerExtractor",
